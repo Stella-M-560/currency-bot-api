@@ -1,11 +1,11 @@
-// index.js - 完整修复版 (Cloudflare Worker)
-const HISTORY_YEARS = 10;
+// index.js - 完整版汇率API (动态10年历史范围)
+const HISTORY_YEARS = 10; // 可配置的年数
 
-// 必须注册的fetch事件监听器
+// 主事件监听
 addEventListener('fetch', event => {
   event.respondWith(
     handleRequest(event.request).catch(err => {
-      return new Response('Internal Server Error', { status: 500 });
+      return formatResponse(`❌ 服务器错误: ${err.message}`, 500);
     })
   );
 });
@@ -22,19 +22,17 @@ async function handleRequest(request) {
   }
 }
 
-// ================== 实时汇率处理 ==================
+// ================ 实时汇率处理 ================
 async function handleRealTimeConversion(params) {
   const from = (params.get('from') || 'USD').toUpperCase();
   const to = (params.get('to') || 'CNY').toUpperCase();
   const amount = parseFloat(params.get('amount')) || 1;
 
-  // 验证货币代码
-  if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to)) {
+  if (!validateCurrency(from) || !validateCurrency(to)) {
     return formatResponse('❌ 货币代码必须是3位大写字母（如USD/CNY）', 400);
   }
 
   try {
-    // 获取实时汇率（带缓存）
     const apiUrl = `https://api.frankfurter.app/latest?from=${from}&to=${to}`;
     const response = await fetchWithCache(apiUrl, 300); // 缓存5分钟
     
@@ -47,25 +45,25 @@ async function handleRealTimeConversion(params) {
     return formatResponse([
       `💱 ${amount} ${from} = ${formatCurrency(to, result)}`,
       `📊 实时汇率: 1 ${from} = ${rate.toFixed(6)} ${to}`,
-      `📈 [查看10年历史数据](${new URL(request.url).origin}/history?from=${from}&to=${to})`
+      `📈 [查看${HISTORY_YEARS}年历史](${new URL(request.url).origin}/history?from=${from}&to=${to})`
     ].join('\n'));
 
   } catch (error) {
-    return formatResponse('❌ 实时汇率获取失败: ' + error.message, 502);
+    return formatResponse(`❌ 实时汇率获取失败: ${error.message}`, 502);
   }
 }
 
-// ================== 历史数据处理 ==================
+// ================ 历史数据处理 ================
 async function handleHistoricalData(params) {
   const from = (params.get('from') || 'USD').toUpperCase();
   const to = (params.get('to') || 'CNY').toUpperCase();
 
-  if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to)) {
+  if (!validateCurrency(from) || !validateCurrency(to)) {
     return formatResponse('❌ 无效货币代码', 400);
   }
 
   try {
-    // 获取历史数据（带缓存）
+    // 动态计算日期范围（当前日期往前推HISTORY_YEARS年）
     const endDate = new Date();
     const startDate = new Date();
     startDate.setFullYear(endDate.getFullYear() - HISTORY_YEARS);
@@ -76,16 +74,16 @@ async function handleHistoricalData(params) {
     if (!response.ok) throw new Error('历史API请求失败');
     
     const data = await response.json();
-    const table = generateHistoryTable(data, from, to);
+    const table = generateHistoryTable(data, from, to, startDate, endDate);
 
     return formatResponse(table);
 
   } catch (error) {
-    return formatResponse('❌ 历史数据获取失败: ' + error.message, 502);
+    return formatResponse(`❌ 历史数据获取失败: ${error.message}`, 502);
   }
 }
 
-// ================== 辅助函数 ==================
+// ================ 辅助函数 ================
 // 带缓存的fetch请求
 async function fetchWithCache(url, ttl = 60) {
   const cache = caches.default;
@@ -95,7 +93,6 @@ async function fetchWithCache(url, ttl = 60) {
   const response = await fetch(url);
   if (!response.ok) return response;
 
-  // 克隆响应以存入缓存
   const responseToCache = response.clone();
   event.waitUntil(
     cache.put(url, responseToCache, { expirationTtl: ttl })
@@ -103,15 +100,17 @@ async function fetchWithCache(url, ttl = 60) {
   return response;
 }
 
-// 生成历史数据表格
-function generateHistoryTable(data, from, to) {
+// 生成历史数据表格（动态年份范围）
+function generateHistoryTable(data, from, to, startDate, endDate) {
   const yearlyStats = {};
+  const allRates = [];
   
-  // 计算每年统计
+  // 计算每年统计指标
   Object.entries(data.rates).forEach(([date, rates]) => {
     const year = date.substring(0, 4);
     const rate = rates[to];
-    
+    allRates.push(rate);
+
     if (!yearlyStats[year]) {
       yearlyStats[year] = { min: rate, max: rate, sum: rate, count: 1 };
     } else {
@@ -138,30 +137,38 @@ function generateHistoryTable(data, from, to) {
     });
 
   // 整体统计
-  const allRates = Object.values(data.rates).map(r => r[to]);
   const overallMin = Math.min(...allRates).toFixed(4);
   const overallMax = Math.max(...allRates).toFixed(4);
   const overallAvg = (allRates.reduce((a, b) => a + b, 0) / allRates.length).toFixed(4);
+  const startYear = startDate.getFullYear();
+  const endYear = endDate.getFullYear();
 
   return [
-    `📊 **${from}/${to} 近${HISTORY_YEARS}年汇率统计**`,
-    `📅 数据范围: ${Object.keys(yearlyStats)[0]} 至 ${Object.keys(yearlyStats).pop()}`,
+    `📊 **${from}/${to} 近${HISTORY_YEARS}年统计（${startYear}-${endYear}）**`,
+    `📅 数据范围: ${formatDisplayDate(startDate)} 至 ${formatDisplayDate(endDate)}`,
     '',
     table,
     '',
-    `📌 **整体统计**`,
+    `📌 **整体趋势**`,
     `- 历史最低: ${overallMin} ${to}`,
     `- 历史最高: ${overallMax} ${to}`,
-    `- 十年平均: ${overallAvg} ${to}`
+    `- ${HISTORY_YEARS}年平均: ${overallAvg} ${to}`,
+    `- 数据更新: ${new Date().toISOString().split('T')[0]}`
   ].join('\n');
 }
 
-// 格式化日期为YYYY-MM-DD
+// 日期格式化（API请求用）
 function formatDate(date) {
-  return date.toISOString().split('T')[0];
+  return date.toISOString().split('T')[0]; // YYYY-MM-DD
 }
 
-// 格式化货币显示
+// 日期格式化（显示用）
+function formatDisplayDate(date) {
+  const options = { year: 'numeric', month: 'long', day: 'numeric' };
+  return date.toLocaleDateString('zh-CN', options); // 示例：2025年6月20日
+}
+
+// 货币格式化
 function formatCurrency(currency, value) {
   return new Intl.NumberFormat(undefined, {
     style: 'currency',
@@ -169,6 +176,11 @@ function formatCurrency(currency, value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   }).format(value).replace(/\s/g, '');
+}
+
+// 货币代码验证
+function validateCurrency(currency) {
+  return /^[A-Z]{3}$/.test(currency);
 }
 
 // 标准化响应
