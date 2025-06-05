@@ -1,4 +1,4 @@
-// index.js - 完整修复版 (Cloudflare Worker)
+// index.js - Cloudflare Worker
 const DEFAULT_HISTORY_YEARS = 10;
 
 // 货币别名库
@@ -251,4 +251,10 @@ function formatDisplayDate(date) {
 
 function formatResponse(body, status = 200) {
   return new Response(body, {
-   
+    status,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    }
+  });
+}
