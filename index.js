@@ -95,19 +95,6 @@ async function handleRealTimeConversion(from, to, amount) {
 }
 
 // ================ 历史数据 ================
-async function handleHistoricalData(from, to, timeRange) {
-  const { startDate, endDate, description } = parseTimeRange(timeRange);
-  const apiUrl = `https://api.frankfurter.app/${formatDate(startDate)}..${formatDate(endDate)}?from=${from}&to=${to}`;
-  const response = await fetchWithCache(apiUrl, 86400); // 缓存1天
-  
-  if (!response.ok) throw new Error('历史数据API不可用');
-  
-  const data = await response.json();
-  return formatResponse(
-    generateHistoryTable(data, from, to, description)
-  );
-}
-
 function parseTimeRange(input) {
   const now = new Date();
   const start = new Date(now);
@@ -143,16 +130,19 @@ function parseTimeRange(input) {
       description = `过去${num}个月`;
     }
   } else {
-    // 默认10年处理
-    start.setFullYear(now.getFullYear() - DEFAULT_HISTORY_YEARS);
+    // 修改此处：默认从当前年份倒推10年
+    const currentYear = now.getFullYear();
+    start.setFullYear(currentYear - DEFAULT_HISTORY_YEARS);
+    
     // 处理闰日
     if (now.getMonth() === 1 && now.getDate() === 29) {
-      const targetYear = now.getFullYear() - DEFAULT_HISTORY_YEARS;
+      const targetYear = currentYear - DEFAULT_HISTORY_YEARS;
       const isTargetLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || targetYear % 400 === 0;
       if (!isTargetLeap) {
         start.setMonth(1, 28);
       }
     }
+    description = `过去${DEFAULT_HISTORY_YEARS}年`;
   }
 
   return { startDate: start, endDate: now, description };
