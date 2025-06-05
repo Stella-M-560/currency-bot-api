@@ -119,14 +119,40 @@ function parseTimeRange(input) {
     const unit = matches[3];
     
     if (unit === '年' || unit === '年') {
-      start.setFullYear(now.getFullYear() - num);
+      // 处理闰日问题
+      const targetYear = now.getFullYear() - num;
+      start.setFullYear(targetYear);
+      
+      // 如果当前是闰日(2月29日)且目标年份不是闰年
+      if (now.getMonth() === 1 && now.getDate() === 29) {
+        const isTargetLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || targetYear % 400 === 0;
+        if (!isTargetLeap) {
+          start.setMonth(1, 28); // 非闰年设置为2月28日
+        }
+      }
       description = `过去${num}年`;
     } else {
-      start.setMonth(now.getMonth() - num);
+      // 处理月份计算
+      const totalMonths = now.getMonth() - num;
+      start.setMonth(totalMonths);
+      
+      // 处理跨年和日期不一致问题
+      if (start.getDate() !== now.getDate()) {
+        start.setDate(0); // 设置为上个月的最后一天
+      }
       description = `过去${num}个月`;
     }
   } else {
+    // 默认10年处理
     start.setFullYear(now.getFullYear() - DEFAULT_HISTORY_YEARS);
+    // 处理闰日
+    if (now.getMonth() === 1 && now.getDate() === 29) {
+      const targetYear = now.getFullYear() - DEFAULT_HISTORY_YEARS;
+      const isTargetLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || targetYear % 400 === 0;
+      if (!isTargetLeap) {
+        start.setMonth(1, 28);
+      }
+    }
   }
 
   return { startDate: start, endDate: now, description };
@@ -225,10 +251,4 @@ function formatDisplayDate(date) {
 
 function formatResponse(body, status = 200) {
   return new Response(body, {
-    status,
-    headers: {
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Access-Control-Allow-Origin': '*'
-    }
-  });
-}
+   
