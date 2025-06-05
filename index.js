@@ -193,6 +193,7 @@ function generateHistoryTable(data, from, to, description) {
   const overallMax = Math.max(...allRates).toFixed(4);
   const overallAvg = (allRates.reduce((a, b) => a + b, 0) / allRates.length).toFixed(4);
   const lastDate = Object.keys(data.rates).pop();
+  const currentDate = new Date().toISOString().split('T')[0];
 
   return [
     `📊 **${from}/${to} ${description}汇率统计**`,
@@ -204,7 +205,7 @@ function generateHistoryTable(data, from, to, description) {
     `- 历史最低: ${overallMin} ${to}`,
     `- 历史最高: ${overallMax} ${to}`,
     `- 期间平均: ${overallAvg} ${to}`,
-    `- 更新日期: ${lastDate}`
+    `- 数据更新: ${lastDate}`
   ].join('\n');
 }
 
