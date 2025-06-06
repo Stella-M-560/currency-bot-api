@@ -97,6 +97,7 @@ async function handleRealTimeConversion(from, to, amount) {
 // ================ 历史数据 ================
 function parseTimeRange(input) {
   const now = new Date();
+  const currentYear = now.getFullYear(); // 动态获取当前年份（如2025）
   const start = new Date(now);
   let description = '近10年';
 
@@ -105,44 +106,33 @@ function parseTimeRange(input) {
     const num = parseInt(matches[2]);
     const unit = matches[3];
     
-    if (unit === '年' || unit === '年') {
-      // 处理闰日问题
-      const targetYear = now.getFullYear() - num;
-      start.setFullYear(targetYear);
+    if (unit === '年') {
+      // 直接计算目标年份（如2025 - 10 = 2015）
+      start.setFullYear(currentYear - num);
       
-      // 如果当前是闰日(2月29日)且目标年份不是闰年
+      // 闰日处理（仅当当前是2月29日且目标年份非闰年时调整）
       if (now.getMonth() === 1 && now.getDate() === 29) {
+        const targetYear = currentYear - num;
         const isTargetLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || targetYear % 400 === 0;
-        if (!isTargetLeap) {
-          start.setMonth(1, 28); // 非闰年设置为2月28日
-        }
+        if (!isTargetLeap) start.setMonth(1, 28); // 改为2月28日
       }
       description = `过去${num}年`;
     } else {
-      // 处理月份计算
-      const totalMonths = now.getMonth() - num;
-      start.setMonth(totalMonths);
-      
-      // 处理跨年和日期不一致问题
-      if (start.getDate() !== now.getDate()) {
-        start.setDate(0); // 设置为上个月的最后一天
-      }
+      // 处理月份逻辑（保持不变）
+      start.setMonth(now.getMonth() - num);
+      if (start.getDate() !== now.getDate()) start.setDate(0);
       description = `过去${num}个月`;
     }
   } else {
-    // 修改此处：默认从当前年份倒推10年
-    const currentYear = now.getFullYear();
+    // 默认10年范围：当前年份 - 10（如2025 - 10 = 2015）
     start.setFullYear(currentYear - DEFAULT_HISTORY_YEARS);
     
-    // 处理闰日
+    // 闰日处理
     if (now.getMonth() === 1 && now.getDate() === 29) {
       const targetYear = currentYear - DEFAULT_HISTORY_YEARS;
       const isTargetLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || targetYear % 400 === 0;
-      if (!isTargetLeap) {
-        start.setMonth(1, 28);
-      }
+      if (!isTargetLeap) start.setMonth(1, 28);
     }
-    description = `过去${DEFAULT_HISTORY_YEARS}年`;
   }
 
   return { startDate: start, endDate: now, description };
