@@ -125,9 +125,17 @@ async function handleHistoricalData(from, to, timeRange) {
   
   const data = await response.json();
   
+  // 添加调试信息（仅在开发模式下）
+  const debugInfo = {
+    requestedRange: `${startDateStr} to ${endDateStr}`,
+    actualRange: data.start_date + ' to ' + data.end_date,
+    dataPoints: Object.keys(data.rates || {}).length,
+    currencies: Object.keys(data.rates?.[Object.keys(data.rates)[0]] || {})
+  };
+  
   // 验证数据质量
   if (!data.rates || Object.keys(data.rates).length < 50) {
-    return formatResponse(`⚠️ ${from}/${to} 历史数据量较少，可能影响统计准确性\n\n` + 
+    return formatResponse(`⚠️ ${from}/${to} 历史数据量较少 (${Object.keys(data.rates || {}).length}个交易日)，可能影响统计准确性\n\n` + 
                          generateHistoryTable(data, from, to, description));
   }
   
@@ -253,17 +261,16 @@ function generateHistoryTable(data, from, to, description) {
     return `❌ ${from}/${to} 汇率数据处理失败`;
   }
 
-  // 生成年度统计表格 - 使用文本格式确保兼容性
-  let table = `\n年度统计表：\n`;
-  table += `年份    最低值    最高值    平均值    波动幅度\n`;
-  table += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+  // 生成年度统计表格 - 使用更清晰的格式
+  let table = `\n📈 年度详细统计：\n\n`;
   
   const sortedYears = Object.keys(yearlyStats).sort();
   sortedYears.forEach(year => {
     const { min, max, sum, count } = yearlyStats[year];
-    const avg = (sum / count).toFixed(4);
-    const volatility = ((max - min) / min * 100).toFixed(1);
-    table += `${year}    ${min.toFixed(4).padEnd(8)}  ${max.toFixed(4).padEnd(8)}  ${avg.padEnd(8)}  ${volatility}%\n`;
+    const avg = (sum / count);
+    const volatility = ((max - min) / min * 100);
+    
+    table += `${year}年: 最低${min.toFixed(4)} | 最高${max.toFixed(4)} | 均值${avg.toFixed(4)} | 波动${volatility.toFixed(1)}%\n`;
   });
 
   // 整体统计
@@ -284,17 +291,17 @@ function generateHistoryTable(data, from, to, description) {
   return [
     `📊 ${from}/${to} ${description}汇率统计`,
     `📅 数据范围: ${formatDisplayDate(new Date(actualStartDate))} 至 ${formatDisplayDate(new Date(actualEndDate))}`,
-    `📈 数据点数: ${allRates.length} 个交易日`,
+    `📈 数据点数: ${allRates.length.toLocaleString()} 个交易日`,
     table,
-    `📌 整体趋势分析`,
+    `\n📌 整体趋势分析`,
     `• 历史最低: ${overallMin.toFixed(4)} ${to} (${minYear}年)`,
     `• 历史最高: ${overallMax.toFixed(4)} ${to} (${maxYear}年)`,
     `• 期间平均: ${overallAvg.toFixed(4)} ${to}`,
     `• 总体波动: ${totalVolatility.toFixed(2)}%`,
-    `• 数据覆盖: ${sortedYears.length} 个年份 (${sortedYears[0]}-${sortedYears[sortedYears.length-1]})`,
-    `• 最新更新: ${formatDisplayDate(new Date(actualEndDate))}`,
+    `• 数据年份: ${sortedYears[0]}-${sortedYears[sortedYears.length-1]} (${sortedYears.length}年)`,
+    `• 最新数据: ${new Date(actualEndDate).toLocaleDateString('zh-CN')}`,
     ``,
-    `💡 如需其他时间段或货币对比，请告诉我！`
+    `💡 如需其他时间段分析或货币对比，请告诉我！`
   ].join('\n');
 }
 
@@ -332,9 +339,14 @@ function formatDate(date) {
 }
 
 function formatDisplayDate(date) {
-  return date.toLocaleDateString('zh-CN', { 
+  // 确保使用正确的日期格式
+  const validDate = new Date(date);
+  if (isNaN(validDate.getTime())) {
+    return new Date().toLocaleDateString('zh-CN');
+  }
+  return validDate.toLocaleDateString('zh-CN', { 
     year: 'numeric', 
-    month: 'short', 
+    month: 'long', 
     day: 'numeric' 
   });
 }
