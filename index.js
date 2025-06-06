@@ -98,7 +98,7 @@ async function handleRealTimeConversion(from, to, amount) {
 function parseTimeRange(input) {
   const now = new Date();
   const currentYear = now.getFullYear(); // 动态获取当前年份（如2025）
-  const start = new Date(now);
+  let start = new Date(now);
   let description = '近10年';
 
   const matches = input.match(/(过去|最近)?(\d+)(年|个月|月)/);
@@ -107,27 +107,27 @@ function parseTimeRange(input) {
     const unit = matches[3];
     
     if (unit === '年') {
-      // 直接计算目标年份（如2025 - 10 = 2015）
+      // 修改点：直接设置年份为当前年份减去num（如2025-10=2015）
       start.setFullYear(currentYear - num);
       
-      // 闰日处理（仅当当前是2月29日且目标年份非闰年时调整）
+      // 闰日处理（保持不变）
       if (now.getMonth() === 1 && now.getDate() === 29) {
         const targetYear = currentYear - num;
         const isTargetLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || targetYear % 400 === 0;
-        if (!isTargetLeap) start.setMonth(1, 28); // 改为2月28日
+        if (!isTargetLeap) start.setMonth(1, 28);
       }
       description = `过去${num}年`;
     } else {
-      // 处理月份逻辑（保持不变）
+      // 月份逻辑保持不变
       start.setMonth(now.getMonth() - num);
       if (start.getDate() !== now.getDate()) start.setDate(0);
       description = `过去${num}个月`;
     }
   } else {
-    // 默认10年范围：当前年份 - 10（如2025 - 10 = 2015）
+    // 修改点：默认范围改为当前年份减去DEFAULT_HISTORY_YEARS（如2025-10=2015）
     start.setFullYear(currentYear - DEFAULT_HISTORY_YEARS);
     
-    // 闰日处理
+    // 闰日处理（保持不变）
     if (now.getMonth() === 1 && now.getDate() === 29) {
       const targetYear = currentYear - DEFAULT_HISTORY_YEARS;
       const isTargetLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || targetYear % 400 === 0;
