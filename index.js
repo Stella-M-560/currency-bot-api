@@ -1,41 +1,25 @@
-// index.js - Cloudflare Worker (修复版)
+// index.js - Cloudflare Worker
 const DEFAULT_HISTORY_YEARS = 10;
 
 // 货币别名库
 const CURRENCY_ALIAS = {
-  'USD': 'USD', '美金': 'USD', '美元': 'USD', '刀': 'USD',
-  'CNY': 'CNY', '人民币': 'CNY', 'rmb': 'CNY', '软妹币': 'CNY',
-  'JPY': 'JPY', '日元': 'JPY', '倭元': 'JPY',
-  'EUR': 'EUR', '欧元': 'EUR',
-  'GBP': 'GBP', '英镑': 'GBP',
-  'CAD': 'CAD', '加元': 'CAD',
-  'AUD': 'AUD', '澳元': 'AUD',
-  'CHF': 'CHF', '瑞士法郎': 'CHF',
-  'HKD': 'HKD', '港币': 'HKD', '港元': 'HKD'
+  'USD': 'USD', '美金': 'USD', '美元': 'USD',
+  'CNY': 'CNY', '人民币': 'CNY', 'rmb': 'CNY',
+  'JPY': 'JPY', '日元': 'JPY', 'EUR': 'EUR', '欧元': 'EUR',
+  'GBP': 'GBP', '英镑': 'GBP'
 };
 
 // 单位换算
 const UNIT_MAP = {
   '万': 1e4, 'w': 1e4, '亿': 1e8,
-  'k': 1e3, 'K': 1e3, 'm': 1e6, 'M': 1e6,
-  '千': 1e3, '百万': 1e6
-};
-
-// 支持的汇率对（用于处理非EUR基础的汇率对）
-const SUPPORTED_PAIRS = {
-  'USD/CNY': true, 'CNY/USD': true,
-  'USD/JPY': true, 'JPY/USD': true,
-  'EUR/USD': true, 'USD/EUR': true,
-  'GBP/USD': true, 'USD/GBP': true,
-  // 添加更多支持的汇率对
+  'k': 1e3, 'K': 1e3, 'm': 1e6, 'M': 1e6
 };
 
 // 主入口
 addEventListener('fetch', event => {
   event.respondWith(
     handleRequest(event.request).catch(err => {
-      console.error('系统错误:', err);
-      return formatResponse(`❌ 系统错误: ${err.message}\n\n💡 提示：如果查询非欧元汇率对，可能需要通过EUR中转计算`, 500);
+      return formatResponse(`❌ 系统错误: ${err.message}`, 500);
     })
   );
 });
@@ -53,7 +37,6 @@ async function handleRequest(request) {
       ? handleHistoricalData(from, to, timeRange)
       : handleRealTimeConversion(from, to, amount);
   } catch (err) {
-    console.error('处理失败:', err);
     return formatResponse(`❌ 处理失败: ${err.message}`, 500);
   }
 }
@@ -74,7 +57,7 @@ function parseParams(params) {
 function parseInputAmount(input) {
   if (!input) return 1;
   
-  const match = input.match(/^([0-9,.]+)\s*([万千亿KMkm百万]+)?/);
+  const match = input.match(/^([0-9,.]+)\s*([万千亿KMkm]+)?/);
   if (!match) return NaN;
   
   let num = parseFloat(match[1].replace(/,/g, ''));
@@ -95,226 +78,81 @@ function normalizeCurrency(input) {
 
 // ================ 实时汇率 ================
 async function handleRealTimeConversion(from, to, amount) {
-  // 如果是非EUR基础的汇率对，尝试直接查询
-  let result = await tryDirectConversion(from, to, amount);
-  if (result) return result;
+  const apiUrl = `https://api.frankfurter.app/latest?from=${from}&to=${to}`;
+  const response = await fetchWithCache(apiUrl, 300); // 缓存5分钟
   
-  // 如果直接查询失败，尝试通过EUR中转
-  result = await tryEuroConversion(from, to, amount);
-  if (result) return result;
+  if (!response.ok) throw new Error('汇率API不可用');
   
-  throw new Error('该货币对暂不支持或数据不可用');
-}
-
-async function tryDirectConversion(from, to, amount) {
-  try {
-    const apiUrl = `https://api.frankfurter.app/latest?from=${from}&to=${to}`;
-    const response = await fetchWithTimeout(apiUrl, 5000);
-    
-    if (!response.ok) return null;
-    
-    const data = await response.json();
-    const rate = data.rates[to];
-    
-    if (!rate) return null;
-    
-    const result = (amount * rate).toFixed(2);
-    
-    return formatResponse([
-      `💱 ${formatLargeNumber(amount)} ${from} = ${formatCurrency(to, result)}`,
-      `📊 1 ${from} = ${rate.toFixed(6)} ${to}`,
-      `📅 汇率时间: ${data.date}`,
-      `💡 需要历史数据请告诉我时间段（如"过去5年"）`
-    ].join('\n'));
-  } catch (error) {
-    console.log(`直接转换失败 ${from}/${to}:`, error.message);
-    return null;
-  }
-}
-
-async function tryEuroConversion(from, to, amount) {
-  try {
-    // 通过EUR中转：from->EUR->to
-    const fromToEurUrl = `https://api.frankfurter.app/latest?from=${from}&to=EUR`;
-    const eurToToUrl = `https://api.frankfurter.app/latest?from=EUR&to=${to}`;
-    
-    const [fromToEurResp, eurToToResp] = await Promise.all([
-      fetchWithTimeout(fromToEurUrl, 5000),
-      fetchWithTimeout(eurToToUrl, 5000)
-    ]);
-    
-    if (!fromToEurResp.ok || !eurToToResp.ok) return null;
-    
-    const fromToEurData = await fromToEurResp.json();
-    const eurToToData = await eurToToResp.json();
-    
-    const fromToEurRate = fromToEurData.rates.EUR;
-    const eurToToRate = eurToToData.rates[to];
-    
-    if (!fromToEurRate || !eurToToRate) return null;
-    
-    const finalRate = fromToEurRate * eurToToRate;
-    const result = (amount * finalRate).toFixed(2);
-    
-    return formatResponse([
-      `💱 ${formatLargeNumber(amount)} ${from} = ${formatCurrency(to, result)}`,
-      `📊 1 ${from} = ${finalRate.toFixed(6)} ${to}`,
-      `🔄 通过EUR中转计算: ${from}→EUR→${to}`,
-      `📅 汇率时间: ${fromToEurData.date}`,
-      `💡 需要历史数据请告诉我时间段（如"过去5年"）`
-    ].join('\n'));
-  } catch (error) {
-    console.log(`EUR中转失败 ${from}/${to}:`, error.message);
-    return null;
-  }
+  const data = await response.json();
+  const rate = data.rates[to];
+  const result = (amount * rate).toFixed(2);
+  
+  return formatResponse([
+    `💱 ${formatLargeNumber(amount)} ${from} = ${formatCurrency(to, result)}`,
+    `📊 1 ${from} = ${rate.toFixed(6)} ${to}`,
+    `💡 需要历史数据请告诉我时间段（如"过去5年"）`
+  ].join('\n'));
 }
 
 // ================ 历史数据 ================
 async function handleHistoricalData(from, to, timeRange) {
   const { startDate, endDate, description } = parseTimeRange(timeRange);
   
-  // 尝试直接查询历史数据
-  let result = await tryDirectHistoricalQuery(from, to, startDate, endDate, description);
-  if (result && result.dataPoints >= 100) {
-    return formatResponse(result.content);
-  }
+  // 构建API URL - 使用正确的日期格式
+  const startDateStr = formatDate(startDate);
+  const endDateStr = formatDate(endDate);
+  const apiUrl = `https://api.frankfurter.app/${startDateStr}..${endDateStr}?from=${from}&to=${to}`;
   
-  // 如果直接查询数据不足，尝试EUR中转
-  console.log(`直接查询数据不足(${result?.dataPoints || 0}点)，尝试EUR中转...`);
-  result = await tryEuroHistoricalQuery(from, to, startDate, endDate, description);
-  if (result) {
-    return formatResponse(result.content);
-  }
+  const response = await fetchWithCache(apiUrl, 3600); // 缓存1小时
   
-  // 如果都失败了，尝试更短的时间范围
-  const fallbackResult = await tryFallbackTimeRange(from, to, endDate, description);
-  return formatResponse(fallbackResult);
-}
-
-async function tryDirectHistoricalQuery(from, to, startDate, endDate, description) {
-  try {
-    const startDateStr = formatDate(startDate);
-    const endDateStr = formatDate(endDate);
-    const apiUrl = `https://api.frankfurter.app/${startDateStr}..${endDateStr}?from=${from}&to=${to}`;
-    
-    console.log(`尝试直接查询: ${apiUrl}`);
-    const response = await fetchWithTimeout(apiUrl, 10000);
-    
-    if (!response.ok) return null;
-    
-    const data = await response.json();
-    const dataPoints = Object.keys(data.rates || {}).length;
-    
-    console.log(`直接查询结果: ${dataPoints} 个数据点`);
-    
-    if (dataPoints === 0) return null;
-    
-    const historyTable = generateHistoryTable(data, from, to, description);
-    return {
-      content: historyTable,
-      dataPoints: dataPoints
-    };
-  } catch (error) {
-    console.log(`直接历史查询失败: ${error.message}`);
-    return null;
-  }
-}
-
-async function tryEuroHistoricalQuery(from, to, startDate, endDate, description) {
-  try {
-    const startDateStr = formatDate(startDate);
-    const endDateStr = formatDate(endDate);
-    
-    // 获取from->EUR和EUR->to的历史数据
-    const fromToEurUrl = `https://api.frankfurter.app/${startDateStr}..${endDateStr}?from=${from}&to=EUR`;
-    const eurToToUrl = `https://api.frankfurter.app/${startDateStr}..${endDateStr}?from=EUR&to=${to}`;
-    
-    console.log(`尝试EUR中转查询: ${from}->EUR->${to}`);
-    
-    const [fromToEurResp, eurToToResp] = await Promise.all([
-      fetchWithTimeout(fromToEurUrl, 10000),
-      fetchWithTimeout(eurToToUrl, 10000)
-    ]);
-    
-    if (!fromToEurResp.ok || !eurToToResp.ok) return null;
-    
-    const fromToEurData = await fromToEurResp.json();
-    const eurToToData = await eurToToResp.json();
-    
-    // 合并计算汇率数据
-    const combinedData = combineEuroData(fromToEurData, eurToToData, from, to);
-    const dataPoints = Object.keys(combinedData.rates || {}).length;
-    
-    console.log(`EUR中转查询结果: ${dataPoints} 个数据点`);
-    
-    if (dataPoints === 0) return null;
-    
-    const historyTable = generateHistoryTable(combinedData, from, to, description + ' (通过EUR中转)');
-    return {
-      content: historyTable,
-      dataPoints: dataPoints
-    };
-  } catch (error) {
-    console.log(`EUR中转历史查询失败: ${error.message}`);
-    return null;
-  }
-}
-
-function combineEuroData(fromToEurData, eurToToData, from, to) {
-  const combinedRates = {};
-  const dates = Object.keys(fromToEurData.rates || {});
-  
-  dates.forEach(date => {
-    const fromToEurRate = fromToEurData.rates[date]?.EUR;
-    const eurToToRate = eurToToData.rates[date]?.[to];
-    
-    if (fromToEurRate && eurToToRate) {
-      const finalRate = fromToEurRate * eurToToRate;
-      if (!combinedRates[date]) combinedRates[date] = {};
-      combinedRates[date][to] = finalRate;
-    }
-  });
-  
-  return {
-    rates: combinedRates,
-    start_date: fromToEurData.start_date,
-    end_date: fromToEurData.end_date,
-    base: from
-  };
-}
-
-async function tryFallbackTimeRange(from, to, endDate, description) {
-  // 尝试更短的时间范围
-  const fallbackRanges = [
-    { years: 5, desc: '过去5年' },
-    { years: 3, desc: '过去3年' },
-    { years: 1, desc: '过去1年' }
-  ];
-  
-  for (const range of fallbackRanges) {
-    try {
+  if (!response.ok) {
+    // 如果长时间范围失败，尝试较短的时间范围
+    if (endDate.getFullYear() - startDate.getFullYear() > 5) {
       const fallbackStart = new Date(endDate);
-      fallbackStart.setFullYear(endDate.getFullYear() - range.years);
+      fallbackStart.setFullYear(endDate.getFullYear() - 5);
+      const fallbackUrl = `https://api.frankfurter.app/${formatDate(fallbackStart)}..${endDateStr}?from=${from}&to=${to}`;
+      const fallbackResponse = await fetchWithCache(fallbackUrl, 3600);
       
-      const result = await tryDirectHistoricalQuery(from, to, fallbackStart, endDate, range.desc);
-      if (result && result.dataPoints > 50) {
-        return result.content + `\n\n⚠️ 原始${description}数据不可用，已显示${range.desc}数据`;
+      if (fallbackResponse.ok) {
+        const fallbackData = await fallbackResponse.json();
+        const historyTable = generateHistoryTable(fallbackData, from, to, '过去5年(数据受限)');
+        return formatResponse(historyTable + '\n\n⚠️ 完整历史数据暂不可用，已显示过去5年数据');
       }
-    } catch (error) {
-      console.log(`Fallback ${range.desc} 失败:`, error.message);
     }
+    
+    throw new Error(`历史汇率API不可用 (${response.status})`);
   }
   
-  return `❌ ${from}/${to} 历史数据暂不可用\n\n💡 建议尝试：\n• 更短的时间范围（如"过去1年"）\n• 主要货币对（如EUR/USD, USD/JPY）\n• 通过欧元中转的汇率计算`;
+  const data = await response.json();
+  
+  // 添加调试信息（仅在开发模式下）
+  const debugInfo = {
+    requestedRange: `${startDateStr} to ${endDateStr}`,
+    actualRange: data.start_date + ' to ' + data.end_date,
+    dataPoints: Object.keys(data.rates || {}).length,
+    currencies: Object.keys(data.rates?.[Object.keys(data.rates)[0]] || {})
+  };
+  
+  // 验证数据质量
+  if (!data.rates || Object.keys(data.rates).length < 50) {
+    return formatResponse(`⚠️ ${from}/${to} 历史数据量较少 (${Object.keys(data.rates || {}).length}个交易日)，可能影响统计准确性\n\n` + 
+                         generateHistoryTable(data, from, to, description));
+  }
+  
+  const historyTable = generateHistoryTable(data, from, to, description);
+  return formatResponse(historyTable);
 }
 
 function parseTimeRange(input) {
   const now = new Date();
   const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth();
+  const currentMonth = now.getMonth(); // 0-11
   const currentDate = now.getDate();
   
+  // 创建结束日期（今天）
   const endDate = new Date(now);
+  
+  // 创建开始日期
   let startDate = new Date(now);
   let description = '近10年';
 
@@ -324,38 +162,44 @@ function parseTimeRange(input) {
     const unit = matches[3];
     
     if (unit === '年') {
+      // 计算开始年份：当前年份 - 指定年数
       const startYear = currentYear - num;
       startDate = new Date(startYear, currentMonth, currentDate);
       
-      // 处理闰年边界情况
+      // 处理闰年边界情况：如果当前是2月29日，但目标年份不是闰年
       if (currentMonth === 1 && currentDate === 29) {
         const isTargetLeap = (startYear % 4 === 0 && startYear % 100 !== 0) || startYear % 400 === 0;
         if (!isTargetLeap) {
-          startDate.setDate(28);
+          startDate.setDate(28); // 改为2月28日
         }
       }
       
       description = `过去${num}年`;
     } else {
+      // 处理月份：当前月份 - 指定月数
       const targetMonth = currentMonth - num;
       if (targetMonth >= 0) {
         startDate = new Date(currentYear, targetMonth, currentDate);
       } else {
+        // 跨年计算
         const yearsBack = Math.ceil(Math.abs(targetMonth) / 12);
         const adjustedMonth = 12 + (targetMonth % 12);
         startDate = new Date(currentYear - yearsBack, adjustedMonth, currentDate);
       }
       
+      // 处理月末日期边界情况（如1月31日往前推1个月应该是12月31日而不是12月31日不存在的情况）
       if (startDate.getDate() !== currentDate) {
-        startDate.setDate(0);
+        startDate.setDate(0); // 设置为上个月的最后一天
       }
       
       description = `过去${num}个月`;
     }
   } else {
+    // 默认处理：过去10年
     const startYear = currentYear - DEFAULT_HISTORY_YEARS;
     startDate = new Date(startYear, currentMonth, currentDate);
     
+    // 处理闰年边界情况
     if (currentMonth === 1 && currentDate === 29) {
       const isTargetLeap = (startYear % 4 === 0 && startYear % 100 !== 0) || startYear % 400 === 0;
       if (!isTargetLeap) {
@@ -366,18 +210,31 @@ function parseTimeRange(input) {
     description = `过去${DEFAULT_HISTORY_YEARS}年`;
   }
 
+  // 确保开始日期不晚于结束日期
   if (startDate > endDate) {
     startDate = new Date(endDate);
-    startDate.setFullYear(endDate.getFullYear() - 1);
+    startDate.setFullYear(endDate.getFullYear() - 1); // 至少1年的数据
   }
 
-  return { startDate, endDate, description };
+  return { 
+    startDate, 
+    endDate, 
+    description,
+    // 添加调试信息（可选）
+    debug: {
+      input,
+      startYear: startDate.getFullYear(),
+      endYear: endDate.getFullYear(),
+      currentYear
+    }
+  };
 }
 
 function generateHistoryTable(data, from, to, description) {
   const yearlyStats = {};
   const allRates = [];
   
+  // 检查数据结构
   if (!data.rates || Object.keys(data.rates).length === 0) {
     return `❌ 没有找到 ${from}/${to} 的历史数据`;
   }
@@ -404,7 +261,7 @@ function generateHistoryTable(data, from, to, description) {
     return `❌ ${from}/${to} 汇率数据处理失败`;
   }
 
-  // 生成年度统计表格
+  // 生成年度统计表格 - 使用更清晰的格式
   let table = `\n📈 年度详细统计：\n\n`;
   
   const sortedYears = Object.keys(yearlyStats).sort();
@@ -449,46 +306,19 @@ function generateHistoryTable(data, from, to, description) {
 }
 
 // ================ 辅助函数 ================
-async function fetchWithTimeout(url, timeout = 5000) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-  
-  try {
-    const response = await fetch(url, { 
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Currency-Bot/1.0'
-      }
-    });
-    clearTimeout(timeoutId);
-    return response;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
-  }
-}
-
 async function fetchWithCache(url, ttl) {
-  try {
-    const cache = caches.default;
-    const cached = await cache.match(url);
-    if (cached) return cached;
+  const cache = caches.default;
+  const cached = await cache.match(url);
+  if (cached) return cached;
 
-    const response = await fetchWithTimeout(url, 10000);
-    if (!response.ok) return response;
+  const response = await fetch(url);
+  if (!response.ok) return response;
 
-    const responseToCache = response.clone();
-    // 使用waitUntil确保缓存操作完成
-    if (typeof event !== 'undefined') {
-      event.waitUntil(
-        cache.put(url, responseToCache, { expirationTtl: ttl })
-      );
-    }
-    return response;
-  } catch (error) {
-    console.error('缓存操作失败:', error);
-    return await fetchWithTimeout(url, 10000);
-  }
+  const responseToCache = response.clone();
+  event.waitUntil(
+    cache.put(url, responseToCache, { expirationTtl: ttl })
+  );
+  return response;
 }
 
 function formatLargeNumber(num) {
@@ -496,16 +326,12 @@ function formatLargeNumber(num) {
 }
 
 function formatCurrency(currency, value) {
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency: currency,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(value).replace(/\s/g, '');
-  } catch (error) {
-    return `${currency} ${value}`;
-  }
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(value).replace(/\s/g, '');
 }
 
 function formatDate(date) {
@@ -513,6 +339,7 @@ function formatDate(date) {
 }
 
 function formatDisplayDate(date) {
+  // 确保使用正确的日期格式
   const validDate = new Date(date);
   if (isNaN(validDate.getTime())) {
     return new Date().toLocaleDateString('zh-CN');
@@ -529,8 +356,7 @@ function formatResponse(body, status = 200) {
     status,
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': status === 200 ? 'public, max-age=300' : 'no-cache'
+      'Access-Control-Allow-Origin': '*'
     }
   });
 }
