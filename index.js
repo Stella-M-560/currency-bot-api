@@ -105,11 +105,33 @@ async function handleHistoricalData(from, to, timeRange) {
   
   const response = await fetchWithCache(apiUrl, 3600); // 缓存1小时
   
-  if (!response.ok) throw new Error('历史汇率API不可用');
+  if (!response.ok) {
+    // 如果长时间范围失败，尝试较短的时间范围
+    if (endDate.getFullYear() - startDate.getFullYear() > 5) {
+      const fallbackStart = new Date(endDate);
+      fallbackStart.setFullYear(endDate.getFullYear() - 5);
+      const fallbackUrl = `https://api.frankfurter.app/${formatDate(fallbackStart)}..${endDateStr}?from=${from}&to=${to}`;
+      const fallbackResponse = await fetchWithCache(fallbackUrl, 3600);
+      
+      if (fallbackResponse.ok) {
+        const fallbackData = await fallbackResponse.json();
+        const historyTable = generateHistoryTable(fallbackData, from, to, '过去5年(数据受限)');
+        return formatResponse(historyTable + '\n\n⚠️ 完整历史数据暂不可用，已显示过去5年数据');
+      }
+    }
+    
+    throw new Error(`历史汇率API不可用 (${response.status})`);
+  }
   
   const data = await response.json();
-  const historyTable = generateHistoryTable(data, from, to, description);
   
+  // 验证数据质量
+  if (!data.rates || Object.keys(data.rates).length < 50) {
+    return formatResponse(`⚠️ ${from}/${to} 历史数据量较少，可能影响统计准确性\n\n` + 
+                         generateHistoryTable(data, from, to, description));
+  }
+  
+  const historyTable = generateHistoryTable(data, from, to, description);
   return formatResponse(historyTable);
 }
 
@@ -204,57 +226,75 @@ function generateHistoryTable(data, from, to, description) {
   const yearlyStats = {};
   const allRates = [];
   
+  // 检查数据结构
+  if (!data.rates || Object.keys(data.rates).length === 0) {
+    return `❌ 没有找到 ${from}/${to} 的历史数据`;
+  }
+  
   // 统计年度数据
   Object.entries(data.rates).forEach(([date, rates]) => {
     const year = date.substring(0, 4);
     const rate = rates[to];
-    allRates.push(rate);
-    
-    if (!yearlyStats[year]) {
-      yearlyStats[year] = { min: rate, max: rate, sum: rate, count: 1 };
-    } else {
-      yearlyStats[year].min = Math.min(yearlyStats[year].min, rate);
-      yearlyStats[year].max = Math.max(yearlyStats[year].max, rate);
-      yearlyStats[year].sum += rate;
-      yearlyStats[year].count++;
+    if (rate && !isNaN(rate)) {
+      allRates.push(rate);
+      
+      if (!yearlyStats[year]) {
+        yearlyStats[year] = { min: rate, max: rate, sum: rate, count: 1 };
+      } else {
+        yearlyStats[year].min = Math.min(yearlyStats[year].min, rate);
+        yearlyStats[year].max = Math.max(yearlyStats[year].max, rate);
+        yearlyStats[year].sum += rate;
+        yearlyStats[year].count++;
+      }
     }
   });
 
-  // 生成表格
-  let table = `| 年份 | 最低值 | 最高值 | 平均值 | 波动幅度 |\n|------|--------|--------|--------|----------|\n`;
+  if (allRates.length === 0) {
+    return `❌ ${from}/${to} 汇率数据处理失败`;
+  }
+
+  // 生成年度统计表格 - 使用文本格式确保兼容性
+  let table = `\n年度统计表：\n`;
+  table += `年份    最低值    最高值    平均值    波动幅度\n`;
+  table += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
   
-  Object.keys(yearlyStats)
-    .sort()
-    .forEach(year => {
-      const { min, max, sum, count } = yearlyStats[year];
-      const avg = (sum / count).toFixed(4);
-      const volatility = ((max - min) / min * 100).toFixed(2);
-      table += `| ${year} | ${min.toFixed(4)} | ${max.toFixed(4)} | ${avg} | ${volatility}% |\n`;
-    });
+  const sortedYears = Object.keys(yearlyStats).sort();
+  sortedYears.forEach(year => {
+    const { min, max, sum, count } = yearlyStats[year];
+    const avg = (sum / count).toFixed(4);
+    const volatility = ((max - min) / min * 100).toFixed(1);
+    table += `${year}    ${min.toFixed(4).padEnd(8)}  ${max.toFixed(4).padEnd(8)}  ${avg.padEnd(8)}  ${volatility}%\n`;
+  });
 
   // 整体统计
-  const overallMin = Math.min(...allRates).toFixed(4);
-  const overallMax = Math.max(...allRates).toFixed(4);
-  const overallAvg = (allRates.reduce((a, b) => a + b, 0) / allRates.length).toFixed(4);
+  const overallMin = Math.min(...allRates);
+  const overallMax = Math.max(...allRates);
+  const overallAvg = allRates.reduce((a, b) => a + b, 0) / allRates.length;
+  const totalVolatility = ((overallMax - overallMin) / overallMin * 100);
   
   // 获取实际的数据日期范围
   const dates = Object.keys(data.rates).sort();
   const actualStartDate = dates[0];
   const actualEndDate = dates[dates.length - 1];
+  
+  // 找出最值对应的年份
+  const minYear = sortedYears.find(year => yearlyStats[year].min === overallMin);
+  const maxYear = sortedYears.find(year => yearlyStats[year].max === overallMax);
 
   return [
-    `📊 **${from}/${to} ${description}汇率统计**`,
+    `📊 ${from}/${to} ${description}汇率统计`,
     `📅 数据范围: ${formatDisplayDate(new Date(actualStartDate))} 至 ${formatDisplayDate(new Date(actualEndDate))}`,
     `📈 数据点数: ${allRates.length} 个交易日`,
-    '',
     table,
-    '',
-    `📌 整体趋势`,
-    `- 历史最低: ${overallMin} ${to}`,
-    `- 历史最高: ${overallMax} ${to}`,
-    `- 期间平均: ${overallAvg} ${to}`,
-    `- 总体波动: ${(((Math.max(...allRates) - Math.min(...allRates)) / Math.min(...allRates)) * 100).toFixed(2)}%`,
-    `- 数据更新: ${actualEndDate}`
+    `📌 整体趋势分析`,
+    `• 历史最低: ${overallMin.toFixed(4)} ${to} (${minYear}年)`,
+    `• 历史最高: ${overallMax.toFixed(4)} ${to} (${maxYear}年)`,
+    `• 期间平均: ${overallAvg.toFixed(4)} ${to}`,
+    `• 总体波动: ${totalVolatility.toFixed(2)}%`,
+    `• 数据覆盖: ${sortedYears.length} 个年份 (${sortedYears[0]}-${sortedYears[sortedYears.length-1]})`,
+    `• 最新更新: ${formatDisplayDate(new Date(actualEndDate))}`,
+    ``,
+    `💡 如需其他时间段或货币对比，请告诉我！`
   ].join('\n');
 }
 
