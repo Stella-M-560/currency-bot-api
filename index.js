@@ -95,10 +95,35 @@ async function handleRealTimeConversion(from, to, amount) {
 }
 
 // ================ 历史数据 ================
+async function handleHistoricalData(from, to, timeRange) {
+  const { startDate, endDate, description } = parseTimeRange(timeRange);
+  
+  // 构建API URL - 使用正确的日期格式
+  const startDateStr = formatDate(startDate);
+  const endDateStr = formatDate(endDate);
+  const apiUrl = `https://api.frankfurter.app/${startDateStr}..${endDateStr}?from=${from}&to=${to}`;
+  
+  const response = await fetchWithCache(apiUrl, 3600); // 缓存1小时
+  
+  if (!response.ok) throw new Error('历史汇率API不可用');
+  
+  const data = await response.json();
+  const historyTable = generateHistoryTable(data, from, to, description);
+  
+  return formatResponse(historyTable);
+}
+
 function parseTimeRange(input) {
   const now = new Date();
-  const currentYear = now.getFullYear(); // 动态获取当前年份（如2025）
-  let start = new Date(now);
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth(); // 0-11
+  const currentDate = now.getDate();
+  
+  // 创建结束日期（今天）
+  const endDate = new Date(now);
+  
+  // 创建开始日期
+  let startDate = new Date(now);
   let description = '近10年';
 
   const matches = input.match(/(过去|最近)?(\d+)(年|个月|月)/);
@@ -107,35 +132,72 @@ function parseTimeRange(input) {
     const unit = matches[3];
     
     if (unit === '年') {
-      // 修改点：直接设置年份为当前年份减去num（如2025-10=2015）
-      start.setFullYear(currentYear - num);
+      // 计算开始年份：当前年份 - 指定年数
+      const startYear = currentYear - num;
+      startDate = new Date(startYear, currentMonth, currentDate);
       
-      // 闰日处理（保持不变）
-      if (now.getMonth() === 1 && now.getDate() === 29) {
-        const targetYear = currentYear - num;
-        const isTargetLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || targetYear % 400 === 0;
-        if (!isTargetLeap) start.setMonth(1, 28);
+      // 处理闰年边界情况：如果当前是2月29日，但目标年份不是闰年
+      if (currentMonth === 1 && currentDate === 29) {
+        const isTargetLeap = (startYear % 4 === 0 && startYear % 100 !== 0) || startYear % 400 === 0;
+        if (!isTargetLeap) {
+          startDate.setDate(28); // 改为2月28日
+        }
       }
+      
       description = `过去${num}年`;
     } else {
-      // 月份逻辑保持不变
-      start.setMonth(now.getMonth() - num);
-      if (start.getDate() !== now.getDate()) start.setDate(0);
+      // 处理月份：当前月份 - 指定月数
+      const targetMonth = currentMonth - num;
+      if (targetMonth >= 0) {
+        startDate = new Date(currentYear, targetMonth, currentDate);
+      } else {
+        // 跨年计算
+        const yearsBack = Math.ceil(Math.abs(targetMonth) / 12);
+        const adjustedMonth = 12 + (targetMonth % 12);
+        startDate = new Date(currentYear - yearsBack, adjustedMonth, currentDate);
+      }
+      
+      // 处理月末日期边界情况（如1月31日往前推1个月应该是12月31日而不是12月31日不存在的情况）
+      if (startDate.getDate() !== currentDate) {
+        startDate.setDate(0); // 设置为上个月的最后一天
+      }
+      
       description = `过去${num}个月`;
     }
   } else {
-    // 修改点：默认范围改为当前年份减去DEFAULT_HISTORY_YEARS（如2025-10=2015）
-    start.setFullYear(currentYear - DEFAULT_HISTORY_YEARS);
+    // 默认处理：过去10年
+    const startYear = currentYear - DEFAULT_HISTORY_YEARS;
+    startDate = new Date(startYear, currentMonth, currentDate);
     
-    // 闰日处理（保持不变）
-    if (now.getMonth() === 1 && now.getDate() === 29) {
-      const targetYear = currentYear - DEFAULT_HISTORY_YEARS;
-      const isTargetLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || targetYear % 400 === 0;
-      if (!isTargetLeap) start.setMonth(1, 28);
+    // 处理闰年边界情况
+    if (currentMonth === 1 && currentDate === 29) {
+      const isTargetLeap = (startYear % 4 === 0 && startYear % 100 !== 0) || startYear % 400 === 0;
+      if (!isTargetLeap) {
+        startDate.setDate(28);
+      }
     }
+    
+    description = `过去${DEFAULT_HISTORY_YEARS}年`;
   }
 
-  return { startDate: start, endDate: now, description };
+  // 确保开始日期不晚于结束日期
+  if (startDate > endDate) {
+    startDate = new Date(endDate);
+    startDate.setFullYear(endDate.getFullYear() - 1); // 至少1年的数据
+  }
+
+  return { 
+    startDate, 
+    endDate, 
+    description,
+    // 添加调试信息（可选）
+    debug: {
+      input,
+      startYear: startDate.getFullYear(),
+      endYear: endDate.getFullYear(),
+      currentYear
+    }
+  };
 }
 
 function generateHistoryTable(data, from, to, description) {
@@ -165,19 +227,25 @@ function generateHistoryTable(data, from, to, description) {
     .sort()
     .forEach(year => {
       const { min, max, sum, count } = yearlyStats[year];
-      table += `| ${year} | ${min.toFixed(4)} | ${max.toFixed(4)} | ${(sum/count).toFixed(4)} | ${((max-min)/min*100).toFixed(2)}% |\n`;
+      const avg = (sum / count).toFixed(4);
+      const volatility = ((max - min) / min * 100).toFixed(2);
+      table += `| ${year} | ${min.toFixed(4)} | ${max.toFixed(4)} | ${avg} | ${volatility}% |\n`;
     });
 
   // 整体统计
   const overallMin = Math.min(...allRates).toFixed(4);
   const overallMax = Math.max(...allRates).toFixed(4);
   const overallAvg = (allRates.reduce((a, b) => a + b, 0) / allRates.length).toFixed(4);
-  const lastDate = Object.keys(data.rates).pop();
-  const currentDate = new Date().toISOString().split('T')[0];
+  
+  // 获取实际的数据日期范围
+  const dates = Object.keys(data.rates).sort();
+  const actualStartDate = dates[0];
+  const actualEndDate = dates[dates.length - 1];
 
   return [
     `📊 **${from}/${to} ${description}汇率统计**`,
-    `📅 数据范围: ${formatDisplayDate(new Date(data.start_date))} 至 ${formatDisplayDate(new Date(data.end_date))}`,
+    `📅 数据范围: ${formatDisplayDate(new Date(actualStartDate))} 至 ${formatDisplayDate(new Date(actualEndDate))}`,
+    `📈 数据点数: ${allRates.length} 个交易日`,
     '',
     table,
     '',
@@ -185,7 +253,8 @@ function generateHistoryTable(data, from, to, description) {
     `- 历史最低: ${overallMin} ${to}`,
     `- 历史最高: ${overallMax} ${to}`,
     `- 期间平均: ${overallAvg} ${to}`,
-    `- 数据更新: ${lastDate}`
+    `- 总体波动: ${(((Math.max(...allRates) - Math.min(...allRates)) / Math.min(...allRates)) * 100).toFixed(2)}%`,
+    `- 数据更新: ${actualEndDate}`
   ].join('\n');
 }
 
